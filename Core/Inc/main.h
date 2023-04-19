@@ -31,6 +31,23 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+struct Motor {
+	volatile int counter_pid;
+	float task, task_real, err_angle;
+
+	float out_angle, err_speed, P_speed, I_speed, out_speed, err_current,
+			P_current, I_current;
+
+	float out_current, out_current_limited, out_pwm, kp_angle,
+			kp_speed;
+
+	float ki_speed, kp_current, ki_current, angle, speed, current;
+	float pwm_difference, hyst_error;
+
+	float previous_pwm;
+
+	int osc_counter;
+};
 
 /* USER CODE END Includes */
 
@@ -66,6 +83,9 @@ void Error_Handler(void);
 #define IN_2_1_GPIO_Port GPIOB
 #define IN_2_2_Pin GPIO_PIN_1
 #define IN_2_2_GPIO_Port GPIOB
+#define SPI_NSS_Pin GPIO_PIN_12
+#define SPI_NSS_GPIO_Port GPIOB
+
 /* USER CODE BEGIN Private defines */
 #define IN_1_1_Pin GPIO_PIN_4
 #define IN_1_1_GPIO_Port GPIOA
@@ -79,19 +99,21 @@ void Error_Handler(void);
 #define _ENABLE_MOTOR_1 1
 #define _ENABLE_MOTOR_2 1
 
-#define _CS1_ADC_MID_POINT 1965
+#define _CS1_ADC_MID_POINT 2010
 #define _CS1_CPU_POWER 3.3
 #define _CS1_QUANT_LEVEL 4096.0
 #define _CS1_PRESCAL (_CS1_CPU_POWER / _CS1_QUANT_LEVEL)
-#define _CS1_VOLTAGE_MID_POINT 1.58
-#define _CS1_SENS 0.08
+#define _CS1_VOLTAGE_MID_POINT 1.603
+#define _CS1_SENS 0.58
 
 #define _CS2_ADC_MID_POINT 2010
 #define _CS2_CPU_POWER 3.3
 #define _CS2_QUANT_LEVEL 4096.0
 #define _CS2_PRESCAL (_CS2_CPU_POWER / _CS2_QUANT_LEVEL)
-#define _CS2_VOLTAGE_MID_POINT 1.612
-#define _CS2_SENS 0.09
+#define _CS2_VOLTAGE_MID_POINT 1.603
+#define _CS2_SENS 0.58
+
+#define _SPI_ENABLE 1
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
