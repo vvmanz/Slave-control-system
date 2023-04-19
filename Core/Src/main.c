@@ -20,12 +20,18 @@
 #include "main.h"
 #include "adc.h"
 #include "dma.h"
+#include "spi.h"
 #include "tim.h"
 #include "gpio.h"
-#include "math.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdbool.h"
+#include "stdlib.h"
+#include "string.h"
+#include "math.h"
+#include <stdio.h>
+#include <stdint.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,8 +41,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define NUM_READ 10
-
+//#define NUM_READ 30
+#define NUM_READ 30
+//UIRS-2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,226 +54,307 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-volatile uint32_t tim1, tim2;
+
+struct Motor motor_1;
+struct Motor motor_2;
+
 volatile uint16_t adcValBuf[2] = { 0, };
-volatile uint8_t encValBuf1[1] = { 0, };
-volatile uint8_t encValBuf2[1] = { 0, };
 
 volatile uint8_t adcFlag;
 
 volatile uint16_t adcValueCh1, adcValueCh2;
 volatile float cs1ADCValFilter, cs2ADCValFilter;
-volatile float cs1RealCur, cs2RealCur;
 
 volatile uint16_t enc1Flag, enc2Flag;
 volatile uint16_t enc1Value, enc2Value;
 
-int tim3_1, tim3_2;
-
-float reduce_counter;
-float counter;
-
 int pid_flag;
-//Motor 3
-float kp_angle_1 = 0.55611920073834;
-float kp_speed_1 = 11.565570934863e-05;
-float ki_speed_1 = 10.9857191588518e-05;
-float kp_current_1 = 0.174697976230632;
-float ki_current_1 = 13.9829080644131;
 
-float kp_angle_2 = 0.55611920073834;
-float kp_speed_2 = 11.565570934863e-05;
-float ki_speed_2 = 9.9657191588518e-05;
-float kp_current_2 = 0.174697976230632;
-float ki_current_2 = 12.9829080644131;
+volatile int32_t enc1Val, resultEncValMot1, pervTickMot1;
+volatile int32_t enc2Val, resultEncValMot2, pervTickMot2;
 
-volatile float out_angle_1, P_speed_1, I_speed_1, out_speed_1, P_current_1,
-		I_current_1, out_current_1;
-volatile float task_angle_1, task_angle_2;
-volatile float err_angle_1, err_speed_1, err_current_1;
-volatile float out_pwm_1;
-volatile float out_angle_2, P_speed_2, I_speed_2, out_speed_2, P_current_2,
-		I_current_2, out_current_2;
-volatile float err_angle_2, err_speed_2, err_current_2;
-volatile float out_pwm_2;
+const float pwm_step = 5;
 
-volatile int32_t enc1Val, resultEncValMot1, realVelMot1, pervTickMot1;
-volatile int32_t enc2Val, resultEncValMot2, realVelMot2, pervTickMot2;
+void detect_and_limit_oscillations(struct Motor *motor, float osc_threshold) {
+	if (fabs(motor->pwm_difference) > osc_threshold
+			&& fabs(motor->err_angle) <= motor->hyst_error) {
+		(motor->osc_counter)++;
+	} else {
+		motor->osc_counter = 0;
+	}
 
-volatile float angle_1, angle_2;
-volatile float task_1, task_2;
-
-volatile float out_current_limited_2, out_current_limited_1;
-volatile int counter_pid_2, counter_pid_1;
-
-void pid_1(int task) {
-
-	counter_pid_1++;
-	if (counter_pid_1 >= 30) {
-		err_angle_1 = task - angle_1;
-		out_angle_1 = err_angle_1 * kp_angle_1;
-		if (out_angle_1 > 12500) {
-			out_angle_1 = 12500;
+	if (motor->osc_counter > 0) {
+		if (motor->pwm_difference > 0) {
+			motor->out_pwm = motor->previous_pwm + pwm_step;
+		} else {
+			motor->out_pwm = motor->previous_pwm - pwm_step;
 		}
-		if (out_angle_1 < -12500) {
-			out_angle_1 = -12500;
-		}
-
-		err_speed_1 = -out_angle_1 + realVelMot1;
-		P_speed_1 = err_speed_1 * kp_speed_1;
-		I_speed_1 += err_speed_1 * ki_speed_1 * 0.01;
-		if (I_speed_1 >= 1.9) {
-			I_speed_1 = 1.9;
-		}
-		if (I_speed_1 <= -1.9) {
-			I_speed_1 = -1.9;
-		}
-		out_speed_1 = P_speed_1 + I_speed_1;
-
-		if (out_speed_1 >= 1.9) {
-			out_speed_1 = 1.9;
-		}
-		if (out_speed_1 <= -1.9) {
-			out_speed_1 = -1.9;
-		}
-		counter_pid_1 = 0;
 	}
-
-	err_current_1 = out_speed_1 - cs1RealCur;
-	P_current_1 = err_current_1 * kp_current_1;
-	I_current_1 += err_current_1 * ki_current_1 * 0.000333;
-
-	if (I_current_1 >= 1) {
-		I_current_1 = 1;
-	}
-	if (I_current_1 <= -1) {
-		I_current_1 = -1;
-	}
-
-	out_current_1 = P_current_1 + I_current_1;
-
-	if (out_current_1 >= 0) {
-		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_RESET);
-	}
-	if (out_current_1 < 0) {
-		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
-	}
-
-	if (out_current_1 >= 1) {
-		out_current_limited_1 = 1;
-	}
-	if (out_current_1 <= -1) {
-		out_current_limited_1 = -1;
-	}
-	if (out_current_1 > -1 && out_current_1 < 1) {
-		out_current_limited_1 = out_current_1;
-	}
-	out_pwm_1 = fabsf(out_current_limited_1 * 1000);
-
-	if (out_pwm_1 == 0) {
-		out_pwm_1 = 1;
-	}
-	if (out_pwm_1 == 1000) {
-		out_pwm_1 = 999;
-	}
-	TIM3->CCR1 = out_pwm_1;
 }
+//void pid(struct Motor *motor, int choice) {
+//	motor->counter_pid++;
+//	if (motor->counter_pid >= 300) {
+//		motor->task_real = motor->task * 27;
+//		motor->hyst_error = 100;
+//		motor->err_angle = motor->task_real - motor->angle;
+//
+//		if (fabs(motor->err_angle) <= motor->hyst_error) {
+//			motor->err_angle = 0;
+//		}
+//
+//		motor->out_angle = motor->err_angle * motor->kp_angle;
+//		if (motor->out_angle > 8000) {
+//			motor->out_angle = 8000;
+//		}
+//		if (motor->out_angle < -8000) {
+//			motor->out_angle = -8000;
+//		}
+//		motor->err_speed = motor->out_angle - motor->speed;
+//
+//		if (fabs(motor->err_angle) <= motor->hyst_error) {
+//			motor->err_speed = 0;
+//		}
+//
+//		motor->P_speed = motor->err_speed * motor->kp_speed;
+//		motor->I_speed += motor->err_speed * motor->ki_speed * 0.1;
+//		if (motor->I_speed >= 2.5) {
+//			motor->I_speed = 2.5;
+//		}
+//		if (motor->I_speed <= -2.5) {
+//			motor->I_speed = -2.5;
+//		}
+//		motor->out_speed = motor->P_speed + motor->I_speed;
+//
+//		if (motor->out_speed >= 2.5) {
+//			motor->out_speed = 2.5;
+//		}
+//		if (motor->out_speed <= -2.5) {
+//			motor->out_speed = -2.5;
+//		}
+//		motor->err_current = motor->out_speed - motor->current;
+//
+//		if (fabs(motor->err_angle) <= motor->hyst_error) {
+//			motor->err_current = 0;
+//		}
+//
+//		motor->P_current = motor->err_current * motor->kp_current;
+//		motor->I_current += motor->err_current * motor->ki_current * 0.1;
+//
+//		if (motor->I_current >= 1) {
+//			motor->I_current = 1;
+//		}
+//		if (motor->I_current <= -1) {
+//			motor->I_current = -1;
+//		}
+//
+//		motor->out_current = motor->P_current + motor->I_current;
+//
+//		if (choice == 1) {
+//			if (motor->out_current >= 0) {
+//				HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_SET);
+//				HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_RESET);
+//
+//			}
+//			if (motor->out_current < 0) {
+//				HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
+//				HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
+//			}
+//		}
+//
+//		if (choice == 2) {
+//			if (motor->out_current >= 0) {
+//				HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
+//				HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
+//			}
+//			if (motor->out_current < 0) {
+//				HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_RESET);
+//				HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_SET);
+//			}
+//		}
+//
+//		if (motor->out_current >= 1) {
+//			motor->out_current_limited = 1;
+//		}
+//		if (motor->out_current <= -1) {
+//			motor->out_current_limited = -1;
+//		}
+//		if (motor->out_current > -1 && motor->out_current < 1) {
+//			motor->out_current_limited = motor->out_current;
+//		}
+//
+//		motor->out_pwm = fabsf(motor->out_current_limited * 1000);
+//		if (motor->out_pwm < 2) {
+//			motor->out_pwm = 1;
+//		}
+//		if (motor->out_pwm > 990) {
+//			motor->out_pwm = 990;
+//		}
+//		motor->pwm_difference = motor->out_pwm - motor->previous_pwm;
+//
+//		if (fabs(motor->pwm_difference) > pwm_step) {
+//			if (motor->pwm_difference > 0) {
+//				motor->out_pwm = motor->previous_pwm + pwm_step;
+//			} else {
+//				motor->out_pwm = motor->previous_pwm - pwm_step;
+//			}
+//		}
+//		if (choice == 1) {
+//			TIM3->CCR1 = motor->out_pwm;
+//		} else if (choice == 2) {
+//			TIM3->CCR2 = motor->out_pwm;
+//		}
+//		motor->previous_pwm = motor->out_pwm;
+//
+//		motor->counter_pid = 0;
+//	}
+//
+//}
 
-void pid_2(int task) {
-	counter_pid_2++;
-	if (counter_pid_2 >= 30) {
-		err_angle_2 = task - angle_2;
-		out_angle_2 = err_angle_2 * kp_angle_2;
-		if (out_angle_2 > 12500) {
-			out_angle_2 = 12500;
+volatile float tasking;
+void pid(struct Motor *motor, float task, int choice) {
+//	motor->counter_pid++;
+//	motor->task_real = task * 27;
+//	motor->hyst_error = 50;
+//	if (motor->counter_pid >= 300) {
+//		motor->err_angle = motor->task_real - motor->angle;
+//
+//		if (fabs(motor->err_angle) <= motor->hyst_error) {
+//			motor->err_angle = 0;
+//
+//			if (choice == 1) {
+//				TIM3->CCR1 -=2;
+//			} else if (choice == 2) {
+//				TIM3->CCR2 -=2;
+//			}
+//		}
+//
+//		motor->out_angle = motor->err_angle * motor->kp_angle;
+//		if (motor->out_angle > 8000) {
+//			motor->out_angle = 8000;
+//		}
+//		if (motor->out_angle < -8000) {
+//			motor->out_angle = -8000;
+//		}
+//		motor->err_speed = motor->out_angle - motor->speed;
+//
+//		if (fabs(motor->err_angle) <= motor->hyst_error) {
+//			motor->err_speed = 0;
+////			motor->I_speed -= motor->err_speed * motor->ki_speed * 0.1;
+//			motor->I_speed = 0;
+//		}
+//
+//		motor->P_speed = motor->err_speed * motor->kp_speed;
+//		motor->I_speed += motor->err_speed * motor->ki_speed * 0.1;
+//		if (motor->I_speed >= 2.5) {
+//			motor->I_speed = 2.5;
+//		}
+//		if (motor->I_speed <= -2.5) {
+//			motor->I_speed = -2.5;
+//		}
+//		motor->out_speed = motor->P_speed + motor->I_speed;
+//
+//		if (motor->out_speed >= 2.5) {
+//			motor->out_speed = 2.5;
+//		}
+//		if (motor->out_speed <= -2.5) {
+//			motor->out_speed = -2.5;
+//		}
+//		motor->counter_pid = 0;
+//	}
+
+//	motor->err_current = motor->out_speed - motor->current;
+	motor->err_current = task - motor->current;
+
+//	if (fabs(motor->err_angle) <= motor->hyst_error) {
+//		motor->err_current = 0;
+//		motor->I_current = 0;
+////		motor->I_current -= motor->err_current * motor->ki_current * 0.000333;
+//	}
+
+	motor->P_current = motor->err_current * motor->kp_current;
+	motor->I_current += motor->err_current * motor->ki_current * 0.000333;
+
+	if (motor->I_current >= 1) {
+		motor->I_current = 1;
+	}
+	if (motor->I_current <= -1) {
+		motor->I_current = -1;
+	}
+
+	motor->out_current = motor->P_current + motor->I_current + motor->speed*0.003375;
+
+	if (choice == 1) {
+		if (motor->out_current >= 0) {
+			HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_RESET);
+
 		}
-		if (out_angle_2 < -12500) {
-			out_angle_2 = -12500;
+		if (motor->out_current < 0) {
+			HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
 		}
+	}
 
-		err_speed_2 = -out_angle_2 + realVelMot2;
-		P_speed_2 = err_speed_2 * kp_speed_2;
-		I_speed_2 += err_speed_2 * ki_speed_2 * 0.01;
-		if (I_speed_2 >= 1.9) {
-			I_speed_2 = 1.9;
+	if (choice == 2) {
+		if (motor->out_current >= 0) {
+			HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
 		}
-		if (I_speed_2 <= -1.9) {
-			I_speed_2 = -1.9;
+		if (motor->out_current < 0) {
+			HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_SET);
 		}
-		out_speed_2 = P_speed_2 + I_speed_2;
-
-		if (out_speed_2 >= 1.9) {
-			out_speed_2 = 1.9;
-		}
-		if (out_speed_2 <= -1.9) {
-			out_speed_2 = -1.9;
-		}
-		counter_pid_2 = 0;
 	}
 
-	err_current_2 = out_speed_2 - cs2RealCur;
-	P_current_2 = err_current_2 * kp_current_2;
-	I_current_2 += err_current_2 * ki_current_2 * 0.000333;
-
-	if (I_current_2 >= 1) {
-		I_current_2 = 1;
+	if (motor->out_current >= 1) {
+		motor->out_current_limited = 1;
 	}
-	if (I_current_2 <= -1) {
-		I_current_2 = -1;
+	if (motor->out_current <= -1) {
+		motor->out_current_limited = -1;
 	}
-
-	out_current_2 = P_current_2 + I_current_2;
-
-	if (out_current_2 >= 0) {
-		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
-	}
-	if (out_current_2 < 0) {
-		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_SET);
+	if (motor->out_current > -1 && motor->out_current < 1) {
+		motor->out_current_limited = motor->out_current;
 	}
 
-	if (out_current_2 >= 1) {
-		out_current_limited_2 = 1;
+	motor->out_pwm = fabsf(motor->out_current_limited * 1000);
+	if (motor->out_pwm < 2) {
+		motor->out_pwm = 1;
 	}
-	if (out_current_2 <= -1) {
-		out_current_limited_2 = -1;
+	if (motor->out_pwm > 990) {
+		motor->out_pwm = 990;
 	}
-	if (out_current_2 > -1 && out_current_2 < 1) {
-		out_current_limited_2 = out_current_2;
-	}
-	out_pwm_2 = fabsf(out_current_limited_2 * 1000);
+//	motor->pwm_difference = motor->out_pwm - motor->previous_pwm;
 
-	if (out_pwm_2 == 0) {
-		out_pwm_2 = 1;
+//	detect_and_limit_oscillations(motor, 0.5);
+
+//	if (fabs(motor->pwm_difference) > pwm_step) {
+//		if (motor->pwm_difference > 0) {
+//			motor->out_pwm = motor->previous_pwm + pwm_step;
+//		} else {
+//			motor->out_pwm = motor->previous_pwm - pwm_step;
+//		}
+//	}
+	if (choice == 1) {
+		TIM3->CCR1 = motor->out_pwm;
+	} else if (choice == 2) {
+		TIM3->CCR2 = motor->out_pwm;
 	}
-	if (out_pwm_2 == 1000) {
-		out_pwm_2 = 999;
-	}
-	TIM3->CCR2 = out_pwm_2;
+//	motor->previous_pwm = motor->out_pwm;
 }
 
 float cs1Voltage, cs2Voltage;
 float cs1Current, cs2Current;
 
-int iter_zero_1 = 0;
-float sum_zero_1;
-float sum_adc_zero_1;
+int counter_test, flag_swtich;
 
-int iter_zero_2 = 0;
-float sum_zero_2;
-float sum_adc_zero_2;
+int32_t slave_transmit[6];
+int32_t slave_receive[6];
 
-float cs1_mid_zero, cs2_mid_zero;
-float cs1_adc_zero, cs2_adc_zero;
-
-int zero_search_1 = 0;
-int zero_search_2 = 2;
-int direction;
-int crit_counter;
-
+int32_t float_to_int32(float value) {
+	float scaled_value = value * 1000000.0f;
+	int32_t int_value = (int32_t) round(scaled_value);
+	return int_value;
+}
 
 /* USER CODE END PV */
 
@@ -279,7 +367,6 @@ float Median_Cur_CS1(float newVal);
 float Median_Cur_CS2(float newVal);
 float simpleKalman1(float newVal);
 float simpleKalman2(float newVal);
-float runMiddleArifmOptim(float newVal);
 void currentSearch(float cs1ADCValFilter, float cs2ADCValFilter);
 /* USER CODE END PFP */
 
@@ -303,6 +390,17 @@ int main(void) {
 	HAL_Init();
 
 	/* USER CODE BEGIN Init */
+	motor_1.kp_angle = 0.412;
+	motor_1.kp_speed = 0.000085;
+	motor_1.ki_speed = 0.000098;
+	motor_1.kp_current = 0.0001;
+	motor_1.ki_current = 19.0;
+
+	motor_2.kp_angle = 0.4;
+	motor_2.kp_speed = 0.000071;
+	motor_2.ki_speed = 0.000098;
+	motor_2.kp_current = 0.0001;
+	motor_2.ki_current = 19.0;
 
 	/* USER CODE END Init */
 
@@ -320,6 +418,8 @@ int main(void) {
 	MX_TIM1_Init();
 	MX_TIM2_Init();
 	MX_TIM3_Init();
+	MX_SPI2_Init();
+	MX_TIM4_Init();
 	/* USER CODE BEGIN 2 */
 	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) &adcValBuf, 2);
 
@@ -329,10 +429,12 @@ int main(void) {
 		__HAL_TIM_CLEAR_IT(&htim1, TIM_IT_UPDATE);
 		HAL_TIM_Encoder_Start_IT(&htim1, TIM_CHANNEL_ALL);
 		HAL_TIM_Base_Start_IT(&htim1);
-		TIM3->CCR1 = 1;
 
-		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
+
+//		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET); ПОЛОЖИТЕЛЬНОЕ
+		TIM3->CCR1 = 1;
 	}
 
 	if (_ENABLE_MOTOR_2) {
@@ -341,16 +443,25 @@ int main(void) {
 		__HAL_TIM_CLEAR_IT(&htim2, TIM_IT_UPDATE);
 		HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
 		HAL_TIM_Base_Start_IT(&htim2);
-		TIM3->CCR2 = 1;
 
-		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_SET);
+		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
+		HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
+
+//		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET); ПОЛОЖИТЕЛЬНОЕ
+		TIM3->CCR2 = 1;
 	}
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
+
+		if (TIM3->CCR1 == 0) {
+			TIM3->CCR1 = 1;
+		}
+		if (TIM3->CCR2 == 0) {
+			TIM3->CCR2 = 1;
+		}
 		if (adcFlag == 1) {
 			adcFlag = 0;
 			HAL_ADC_Stop_DMA(&hadc1);
@@ -377,14 +488,148 @@ int main(void) {
 		if (_ENABLE_MOTOR_2) {
 			enc2Value = TIM2->CNT;
 		}
-		TIM3->CCR2 = 500;
 
-//		if (pid_flag == 1) {
-//			pid_2(task_1);
-//			pid_1(task_1);
-//			pid_flag = 0;
+		if (pid_flag == 1) {
+//			pid(&motor_1, tasking, 1);
+			pid(&motor_2, tasking, 2);
+			pid_flag = 0;
+		}
+//
+//		counter_test++;
+//		if (counter_test > 15000) {
+//			motor_2.P_current = 0;
+//			motor_2.I_current = 0;
+//			motor_2.P_speed = 0;
+//			motor_2.I_speed = 0;
+//			motor_2.out_angle = 0;
+//			tasking += 360;
+//			counter_test = 0;
+//		}
+//		counter_test++;
+//		if (counter_test > 9000 && counter_test < 18000) {
+//			motor_1.task = 360;
+//			motor_2.task = 360;
+//		}
+//		if (counter_test > 18000 && counter_test < 27000) {
+//			motor_1.task = 0;
+//			motor_2.task = 0;
+//		}
+//		if (counter_test > 27000) {
+//			counter_test = 0;
 //		}
 
+//		HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
+//		HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
+//		TIM3->CCR2 = 250;
+////
+//		HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
+//		HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
+//		TIM3->CCR1 = 500;
+//		if (_SPI_ENABLE) {
+//			slave_transmit[0] = float_to_int32(cs1RealCur);
+//			slave_transmit[1] = float_to_int32(realVelMot1);
+//			slave_transmit[2] = float_to_int32(angle_1);
+//
+//			slave_transmit[3] = float_to_int32(cs2RealCur);
+//			slave_transmit[4] = float_to_int32(realVelMot2);
+//			slave_transmit[5] = float_to_int32(angle_2);
+//
+//			if (HAL_GPIO_ReadPin(SPI_NSS_GPIO_Port, SPI_NSS_Pin) == 0) {
+//
+//				HAL_TIM_Base_Start_IT(&htim4);
+//				if (__HAL_TIM_GET_FLAG(&htim4, TIM_FLAG_UPDATE) != RESET) {
+//					__HAL_TIM_CLEAR_IT(&htim4, TIM_IT_UPDATE);
+//				}
+//			}
+//		}
+
+//		counter_test++;
+//		if (flag_swtich == 0) {
+//
+//			if (counter_test > 2000) {
+//				TIM3->CCR1 += 70;
+//				if (TIM3->CCR1 > 800) {
+//					flag_swtich = 1;
+//					counter_test = 0;
+//				}
+//				counter_test = 0;
+//			}
+//
+//		if (flag_swtich == 1){
+//			if (counter_test > 100){
+//				TIM3->CCR1 --;
+//				counter_test =0;
+//			}
+//			if (TIM3->CCR1 <10){
+//				flag_swtich = 0;
+//				counter_test =0;
+//			}
+//
+//		}
+
+//		if (flag_swtich == 0) {
+//			HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_SET);
+//			HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_RESET);
+//			TIM3->CCR2 = 500;
+//
+//			HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_RESET);
+//			HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_SET);
+//			TIM3->CCR1 = 500;
+//			counter_test++;
+//			if (counter_test > 9000) {
+//				counter_test = 0;
+//				flag_swtich = 1;
+//				counter_test = 0;
+//			}
+//		}
+//
+//		if (flag_swtich == 1) {
+//			counter_test++;
+//			if (counter_test > 5) {
+//				TIM3->CCR2 --;
+//				TIM3->CCR1--;
+//				counter_test = 0;
+//			}
+//			if (TIM3->CCR1 < 5) {
+//				counter_test = 0;
+//				TIM3->CCR1 = 0;
+//				TIM3->CCR2 = 0;
+//				flag_swtich = 2;
+//
+//			}
+//		}
+//
+//		if (flag_swtich == 2) {
+//
+//			HAL_GPIO_WritePin(GPIOB, IN_2_1_Pin, GPIO_PIN_RESET);
+//			HAL_GPIO_WritePin(GPIOB, IN_2_2_Pin, GPIO_PIN_SET);
+//			TIM3->CCR2 = 500;
+//
+//			HAL_GPIO_WritePin(GPIOA, IN_1_1_Pin, GPIO_PIN_SET);
+//			HAL_GPIO_WritePin(GPIOA, IN_1_2_Pin, GPIO_PIN_RESET);
+//			TIM3->CCR1 = 500;
+//			counter_test++;
+//			if (counter_test > 9000) {
+//				counter_test = 0;
+//				flag_swtich = 3;
+//				counter_test = 0;
+//			}
+//		}
+//
+//		if (flag_swtich == 3) {
+//			counter_test++;
+//			if (counter_test > 5) {
+//				TIM3->CCR2 --;
+//				TIM3->CCR1--;
+//				counter_test = 0;
+//			}
+//			if (TIM3->CCR1 < 5) {
+//				counter_test = 0;
+//				TIM3->CCR2 = 0;
+//				TIM3->CCR1 = 0;
+//				flag_swtich = 0;
+//			}
+//		}
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
@@ -441,13 +686,12 @@ void currentSearch(float cs1ADCValFilter, float cs2ADCValFilter) {
 	cs2Voltage = cs2ADCValFilter * _CS2_PRESCAL;
 
 	cs1Current = (cs1Voltage - _CS1_VOLTAGE_MID_POINT) / _CS1_SENS;
+
 	cs2Current = (cs2Voltage - _CS2_VOLTAGE_MID_POINT) / _CS2_SENS;
 
-	cs1RealCur = Median_Cur_CS1(cs1Current);
-	cs1RealCur = simpleKalman1(cs1RealCur);
-	cs2RealCur = Median_Cur_CS2(cs2Current);
-	cs2RealCur = simpleKalman2(cs2RealCur);
+	motor_1.current = simpleKalman1(Median_Cur_CS1(cs1Current));
 
+	motor_2.current = simpleKalman2(Median_Cur_CS2(cs2Current));
 }
 
 int Median_ADC_CS1(int newVal) {
@@ -563,7 +807,7 @@ float Median_Cur_CS2(float newVal) {
 }
 
 float _err_measure = 0.4;
-float _q = 0.01;
+float _q = 0.05;
 float simpleKalman1(float newVal) {
 	float _kalman_gain, _current_estimate;
 	static float _err_estimate = 0.04;
