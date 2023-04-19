@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "math.h"
+#include "stdbool.h"
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +37,11 @@
 #define _BACK 0
 #define _FORW 1
 #define NUM_READ 10
+#define MAX_SAMPLES_1 3
+#define MAX_SAMPLES_2 3
+
+#define ALPHA 0.95
+#define BUFFER_SIZE 2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,6 +51,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+extern struct Motor motor_1;
+extern struct Motor motor_2;
+
 uint16_t adcValue[2] = { 0, };
 volatile uint16_t timed;
 
@@ -68,15 +78,33 @@ extern int pid_flag;
 
 int timer_1, timer_2;
 
-int old_emergency_1, current_emergency_1;
-int old_emergency_2, current_emergency_2;
-int emergency_counter;
-float emergency_current;
+float moving_average_1(float sample) {
+	static float samples[MAX_SAMPLES_1] = { 0 };
+	static int count = 0;
+	static float sum = 0;
 
-void emergency() {
-//	HAL_GPIO_WritePin(LED_E_GPIO_Port, LED_E_Pin, 1); // Аварийный светодиод
-	pid_flag = 3; // Отключение двигателей
+	sum += sample - samples[count];
+	samples[count] = sample;
+	count = (count + 1) % MAX_SAMPLES_1;
+	return sum / MAX_SAMPLES_1;
 }
+
+float moving_average_2(float sample) {
+	static float samples[MAX_SAMPLES_2] = { 0 };
+	static int count = 0;
+	static float sum = 0;
+
+	sum += sample - samples[count];
+	samples[count] = sample;
+	count = (count + 1) % MAX_SAMPLES_2;
+	return sum / MAX_SAMPLES_2;
+}
+
+
+int interrupt_enable;
+
+extern int32_t slave_transmit[6];
+extern int32_t slave_receive[6];
 
 /* USER CODE END PV */
 
@@ -91,9 +119,11 @@ void emergency() {
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_adc1;
+extern SPI_HandleTypeDef hspi2;
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
+extern TIM_HandleTypeDef htim4;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -244,9 +274,9 @@ void TIM1_UP_IRQHandler(void) {
 		encoderDirectionMot1 = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim1);
 
 		if (encoderDirectionMot1)
-			enc1Val -= 32;
+			enc1Val -= 1000;
 		else
-			enc1Val += 32;
+			enc1Val += 1000;
 	}
 	/* USER CODE END TIM1_UP_IRQn 0 */
 	HAL_TIM_IRQHandler(&htim1);
@@ -283,18 +313,18 @@ void TIM3_IRQHandler(void) {
 	pid_flag = 1;
 	if (_ENABLE_MOTOR_1) {
 		resultEncValMot1 = enc1Val + enc1Value;
-		angle_1 = -(float) +resultEncValMot1 / 32 * 360;
+		motor_1.angle = (float) (resultEncValMot1) / 1000 * 360;
 
 	}
 	/*----�������� �������������� �������� �����, ������� �������� ��������� �2----*/
 	if (_ENABLE_MOTOR_2) {
 		resultEncValMot2 = enc2Val + enc2Value;
-		angle_2 = (float) +resultEncValMot2 / 1000 * 360;
+		motor_2.angle = -(float) +resultEncValMot2 / 1000 * 360;
 	}
 
 	/*----���� ����������� �� �������----*/
-	timed += 1;
-	if (timed >= 30) {
+	timed++;
+	if (timed >= 300) {
 		if (_ENABLE_MOTOR_1) {
 			deltVelMot1 = (float) resultEncValMot1 - (float) pervTickMot1;
 			pervTickMot1 = resultEncValMot1;
@@ -304,21 +334,60 @@ void TIM3_IRQHandler(void) {
 			pervTickMot2 = resultEncValMot2;
 		}
 		if (_ENABLE_MOTOR_1) {
-			realVelMot1 = -deltVelMot1 / 31 * 92.5 * 60;
+			motor_1.speed = moving_average_1((deltVelMot1 * 60) / (999 * 0.1));
 		}
 		if (_ENABLE_MOTOR_2) {
-			realVelMot2 = deltVelMot2 / 999 * 92.5 * 60;
+			motor_2.speed =  moving_average_2((-deltVelMot2 * 60) / (999 * 0.1));
 		}
 		timed = 0;
 	}
-
-
-
 	/* USER CODE END TIM3_IRQn 0 */
 	HAL_TIM_IRQHandler(&htim3);
 	/* USER CODE BEGIN TIM3_IRQn 1 */
 
 	/* USER CODE END TIM3_IRQn 1 */
+}
+
+/**
+ * @brief This function handles TIM4 global interrupt.
+ */
+void TIM4_IRQHandler(void) {
+	/* USER CODE BEGIN TIM4_IRQn 0 */
+	interrupt_enable++;
+	if (interrupt_enable > 1) {
+		HAL_SPI_TransmitReceive_IT(&hspi2, (uint8_t*) (slave_transmit),
+				(uint8_t*) (slave_receive), 24);
+		HAL_TIM_Base_Stop_IT(&htim4);
+		interrupt_enable = 0;
+	}
+
+	/* USER CODE END TIM4_IRQn 0 */
+	HAL_TIM_IRQHandler(&htim4);
+	/* USER CODE BEGIN TIM4_IRQn 1 */
+
+	/* USER CODE END TIM4_IRQn 1 */
+}
+
+/**
+ * @brief This function handles SPI2 global interrupt.
+ */
+void SPI2_IRQHandler(void) {
+	/* USER CODE BEGIN SPI2_IRQn 0 */
+	if (__HAL_SPI_GET_FLAG(&hspi2,
+			SPI_FLAG_RXNE) && __HAL_SPI_GET_FLAG(&hspi2, SPI_FLAG_TXE)) {
+
+		if (HAL_SPI_GetError(&hspi2) != HAL_SPI_ERROR_NONE) {
+			memset(slave_receive, 0, 24);
+			asm("NOP");
+		} else {
+			asm("NOP");
+		}
+	}
+	/* USER CODE END SPI2_IRQn 0 */
+	HAL_SPI_IRQHandler(&hspi2);
+	/* USER CODE BEGIN SPI2_IRQn 1 */
+
+	/* USER CODE END SPI2_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
